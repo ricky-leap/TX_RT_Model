@@ -1,6 +1,36 @@
-# Output the value of the Leap RT option/hedge product based upon specified parameters
 # Will need to read data from Dremio instead of an Excel file
-# Need to add code for Monthly constraint
+
+"""
+Users can input TX strike prices and partner constraints to calculate expected RT Program revenue
+Author: Richard Wilson
+Leapfrog Power, Inc.
+"""
+
+"""
+INPUTS:
+Historical ERCOT prices for LMP, SPP, and ORDC
+ERCOT Loss of Load Probability (LOLP) values
+Initial capture percentage (how much of first dispatch interval due to latency)
+True/False flag for dispatching outside event window for durations below minimum event duration 
+SPP/REP and LMP/Leap Strike Price for low, mid, and high cases
+Max Number of events per Day and Week
+Event windows
+Minimum and maximum event durations where below minimum it doesn't count as an event
+Eligible event days
+Value of Lost Load (VOLL)
+Minimum Contingency Level (MCL)
+
+OUTPUTS: 
+$/MW revenue figures (monthly by location and strike case) without constraints
+$/MW revenue figures with constraints applied
+$/MW revenue figures with new ORDC methodology
+Dispatch events and durations (daily)
+Monthly strikes
+
+Thoughts on improvements:
+Add code for monthly constraints and for a recovery time
+"""
+
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -169,22 +199,32 @@ def constrained_dispatch(*args):
             if constraints['Dispatch Outside Event Window']:
                 df_lmp[arg + '_Dispatch_' + strike + '_SPP_constrained'] = \
                     np.where(df_lmp['Weekday Dispatch'] == 1,
-                             np.where(((df_lmp['hour'] < df_lmp['Event Window Start Hour']) |
-                                       (df_lmp['hour'] >= df_lmp['Event Window End Hour']))
+                             np.where(((df_lmp['hour'] < df_lmp['Event Window 1 Start Hour']) |
+                                       ((df_lmp['hour'] >= df_lmp['Event Window 1 End Hour']) &
+                                       (df_lmp['hour'] < df_lmp['Event Window 2 Start Hour'])) |
+                                       (df_lmp['hour'] >= df_lmp['Event Window 2 End Hour']))
                                       & (df_lmp['Event Duration Min (min)'] > 0),
                                       df_lmp[arg + '_Dispatch_' + strike + '_SPP'],
-                                      np.where((df_lmp['hour'] >= df_lmp['Event Window Start Hour'])
-                                               & (df_lmp['hour'] < df_lmp['Event Window End Hour']),
+                                      np.where(((df_lmp['hour'] >= df_lmp['Event Window 1 Start Hour'])
+                                               & (df_lmp['hour'] < df_lmp['Event Window 1 End Hour'])) |
+                                               ((df_lmp['hour'] >= df_lmp['Event Window 2 Start Hour'])
+                                               & (df_lmp['hour'] < df_lmp['Event Window 2 End Hour'])),
                                                np.where((df_lmp[arg + '_Strike_' + strike + '_SPP'] == 1)
-                                                        & (df_lmp['hour'].shift(1) < df_lmp['Event Window Start Hour']),
-                                                        1, df_lmp[arg + '_Dispatch_' + strike + '_SPP']), 0)), 0)
+                                                        & ((df_lmp['hour'].shift(1) <
+                                                           df_lmp['Event Window 1 Start Hour']) |
+                                                           (df_lmp['hour'].shift(1) <
+                                                            df_lmp['Event Window 2 Start Hour'])), 1,
+                                                        df_lmp[arg + '_Dispatch_' + strike + '_SPP']), 0)), 0)
             else:
                 df_lmp[arg + '_Dispatch_' + strike + '_SPP_constrained'] = np.where(
-                    (df_lmp['hour'] < df_lmp['Event Window Start Hour'])
-                    | (df_lmp['hour'] >= df_lmp['Event Window End Hour']), 0,
+                    (df_lmp['hour'] < df_lmp['Event Window 1 Start Hour']) |
+                    ((df_lmp['hour'] >= df_lmp['Event Window 1 End Hour']) &
+                     (df_lmp['hour'] < df_lmp['Event Window 2 Start Hour'])) |
+                    (df_lmp['hour'] >= df_lmp['Event Window 2 End Hour']), 0,
                     np.where((df_lmp['Weekday Dispatch'] == 1),
                              np.where((df_lmp[arg + '_Strike_' + strike + '_SPP'] == 1)
-                                      & (df_lmp['hour'].shift(1) < df_lmp['Event Window Start Hour']), 1,
+                                      & ((df_lmp['hour'].shift(1) < df_lmp['Event Window 1 Start Hour']) |
+                                         (df_lmp['hour'].shift(1) < df_lmp['Event Window 2 Start Hour'])), 1,
                                       df_lmp[arg + '_Dispatch_' + strike + '_SPP']), 0))
     for arg in args:
         for strike in strike_range:
@@ -192,26 +232,34 @@ def constrained_dispatch(*args):
                 if constraints['Dispatch Outside Event Window']:
                     df_lmp['new_ORDC_' + arg + '_Dispatch_' + strike + '_SPP_constrained'] = \
                         np.where(df_lmp['Weekday Dispatch'] == 1,
-                                 np.where(((df_lmp['hour'] < df_lmp['Event Window Start Hour']) |
-                                           (df_lmp['hour'] >= df_lmp['Event Window End Hour'])) &
+                                 np.where(((df_lmp['hour'] < df_lmp['Event Window 1 Start Hour']) |
+                                           ((df_lmp['hour'] >= df_lmp['Event Window 1 End Hour']) &
+                                            (df_lmp['hour'] < df_lmp['Event Window 2 Start Hour'])) |
+                                           (df_lmp['hour'] >= df_lmp['Event Window 2 End Hour'])) &
                                           (df_lmp['Event Duration Min (min)'] > 0) & (df_lmp['Weekday Dispatch'] == 1),
                                           df_lmp['new_ORDC_' + arg + '_Dispatch_' + strike + '_SPP'],
-                                          np.where((df_lmp['hour'] >= df_lmp['Event Window Start Hour']) &
-                                                   (df_lmp['hour'] < df_lmp['Event Window End Hour']) &
-                                                   (df_lmp['Weekday Dispatch'] == 1),
+                                          np.where(((df_lmp['hour'] >= df_lmp['Event Window 1 Start Hour'])
+                                                    & (df_lmp['hour'] < df_lmp['Event Window 1 End Hour'])) |
+                                                   ((df_lmp['hour'] >= df_lmp['Event Window 2 Start Hour'])
+                                                    & (df_lmp['hour'] < df_lmp['Event Window 2 End Hour'])),
                                                    np.where((df_lmp['new_ORDC_' + arg + '_Strike_' + strike + '_SPP']
                                                              == 1) &
-                                                            (df_lmp['hour'].shift(1) <
-                                                             df_lmp['Event Window Start Hour']), 1,
+                                                            ((df_lmp['hour'].shift(1) <
+                                                              df_lmp['Event Window 1 Start Hour']) |
+                                                             (df_lmp['hour'].shift(1) <
+                                                              df_lmp['Event Window 2 Start Hour'])), 1,
                                                             df_lmp['new_ORDC_' + arg + '_Dispatch_' + strike + '_SPP']),
                                                    0)), 0)
             else:
                 df_lmp['new_ORDC_' + arg + '_Dispatch_' + strike + '_SPP_constrained'] = np.where(
-                    (df_lmp['hour'] < df_lmp['Event Window Start Hour'])
-                    | (df_lmp['hour'] >= df_lmp['Event Window End Hour']), 0,
+                    (df_lmp['hour'] < df_lmp['Event Window 1 Start Hour']) |
+                    ((df_lmp['hour'] >= df_lmp['Event Window 1 End Hour']) &
+                     (df_lmp['hour'] < df_lmp['Event Window 2 Start Hour'])) |
+                    (df_lmp['hour'] >= df_lmp['Event Window 2 End Hour']), 0,
                     np.where((df_lmp['Weekday Dispatch'] == 1),
                              np.where((df_lmp['new_ORDC_' + arg + '_Strike_' + strike + '_SPP'] == 1)
-                                      & (df_lmp['hour'].shift(1) < df_lmp['Event Window Start Hour']), 1,
+                                      & ((df_lmp['hour'].shift(1) < df_lmp['Event Window 1 Start Hour']) |
+                                         (df_lmp['hour'].shift(1) < df_lmp['Event Window 2 Start Hour'])), 1,
                                       df_lmp['new_ORDC_' + arg + '_Dispatch_' + strike + '_SPP']), 0))
 
 
@@ -229,18 +277,26 @@ def constrained_events(*args):
                     (df_lmp[arg + '_Dispatch_' + strike + '_SPP_constrained'] == 1) |
                     (df_lmp[arg + '_Strike_' + strike + '_SPP'] == 1) &
                     (df_lmp['date'] != df_lmp['date'].shift(1)) &
-                    (df_lmp['hour'] >= df_lmp['Event Window Start Hour']) &
-                    (df_lmp['hour'] < df_lmp['Event Window End Hour']), 1, 0)
+                    (((df_lmp['hour'] >= df_lmp['Event Window 1 Start Hour'])
+                     & (df_lmp['hour'] < df_lmp['Event Window 1 End Hour'])) |
+                     ((df_lmp['hour'] >= df_lmp['Event Window 2 Start Hour'])
+                     & (df_lmp['hour'] < df_lmp['Event Window 2 End Hour']))), 1, 0)
             df_lmp[strike + '_temp'] = df_lmp[strike].groupby(df_lmp['date']).cumsum()
             df_lmp[arg + '_Events_' + strike + '_SPP_constrained'] = \
                 np.where(df_lmp[strike + '_temp'] == 0, np.nan, df_lmp[strike + '_temp'])
             df_lmp[strike + '_max_dur'] = df_lmp[arg + '_Duration_' + strike + '_SPP'].groupby(
                 [df_lmp['date'], df_lmp[arg + '_Events_' + strike + '_SPP']]).transform(max)
             df_lmp[strike + '_dispatch_over_min_dur'] = np.where((df_lmp[strike + '_max_dur'] >=
-                                                                df_lmp['Event Duration Min (min)']) &
-                                                                (df_lmp['hour'] >= df_lmp['Event Window Start Hour']) &
-                                                                (df_lmp['hour'] < df_lmp['Event Window End Hour']) &
-                                                                df_lmp[strike] == 1, 1, 0)
+                                                                  df_lmp['Event Duration Min (min)']) &
+                                                                 (((df_lmp['hour'] >=
+                                                                    df_lmp['Event Window 1 Start Hour'])
+                                                                   & (df_lmp['hour'] <
+                                                                      df_lmp['Event Window 1 End Hour'])) |
+                                                                  ((df_lmp['hour'] >=
+                                                                    df_lmp['Event Window 2 Start Hour'])
+                                                                   & (df_lmp['hour'] <
+                                                                      df_lmp['Event Window 2 End Hour'])))
+                                                                 & df_lmp[strike] == 1, 1, 0)
             df_lmp[strike + '_temp_Dly'] = df_lmp[strike + '_dispatch_over_min_dur'].groupby(df_lmp['date']).cumsum()
             df_lmp[arg + '_Events_Dly_' + strike + '_SPP_constrained'] = \
                 np.where(df_lmp[strike + '_temp_Dly'] == 0, np.nan, df_lmp[strike + '_temp_Dly'])
@@ -266,8 +322,10 @@ def constrained_events(*args):
                     (df_lmp['new_ORDC_' + arg + '_Dispatch_' + strike + '_SPP_constrained'] == 1) |
                     (df_lmp['new_ORDC_' + arg + '_Strike_' + strike + '_SPP'] == 1) &
                     (df_lmp['date'] != df_lmp['date'].shift(1)) &
-                    (df_lmp['hour'] >= df_lmp['Event Window Start Hour']) &
-                    (df_lmp['hour'] < df_lmp['Event Window End Hour']), 1, 0)
+                    (((df_lmp['hour'] >= df_lmp['Event Window 1 Start Hour'])
+                      & (df_lmp['hour'] < df_lmp['Event Window 1 End Hour'])) |
+                     ((df_lmp['hour'] >= df_lmp['Event Window 2 Start Hour'])
+                      & (df_lmp['hour'] < df_lmp['Event Window 2 End Hour']))), 1, 0)
             df_lmp['new_ORDC_' + strike + '_temp'] = df_lmp['new_ORDC_' + strike].groupby(df_lmp['date']).cumsum()
             df_lmp['new_ORDC_' + arg + '_Events_' + strike + '_SPP_constrained'] = \
                 np.where(df_lmp['new_ORDC_' + strike + '_temp'] == 0, np.nan, df_lmp['new_ORDC_' + strike + '_temp'])
@@ -276,8 +334,10 @@ def constrained_events(*args):
                 [df_lmp['date'], df_lmp['new_ORDC_' + arg + '_Events_' + strike + '_SPP']]).transform(max)
             df_lmp['new_ORDC_' + strike + '_dispatch_over_min_dur'] =\
                 np.where((df_lmp['new_ORDC_' + strike + '_max_dur'] >= df_lmp['Event Duration Min (min)']) &
-                         (df_lmp['hour'] >= df_lmp['Event Window Start Hour']) &
-                         (df_lmp['hour'] < df_lmp['Event Window End Hour']) &
+                         (((df_lmp['hour'] >= df_lmp['Event Window 1 Start Hour'])
+                           & (df_lmp['hour'] < df_lmp['Event Window 1 End Hour'])) |
+                          ((df_lmp['hour'] >= df_lmp['Event Window 2 Start Hour'])
+                           & (df_lmp['hour'] < df_lmp['Event Window 2 End Hour']))) &
                          df_lmp['new_ORDC_' + strike] == 1, 1, 0)
             df_lmp['new_ORDC_' + strike + '_temp_Dly'] =\
                 df_lmp['new_ORDC_' + strike + '_dispatch_over_min_dur'].groupby(df_lmp['date']).cumsum()
@@ -309,8 +369,10 @@ def constrained_duration(*args):  # in minutes
                     [df_lmp[arg + '_Events_' + strike + '_SPP_constrained'],
                      df_lmp['date']]).cumsum(), np.nan)
             df_lmp[arg + '_Duration_' + strike + '_SPP_constrained'] = \
-                np.where((df_lmp['hour'] >= df_lmp['Event Window Start Hour']) &
-                         (df_lmp['hour'] < df_lmp['Event Window End Hour']),
+                np.where((((df_lmp['hour'] >= df_lmp['Event Window 1 Start Hour'])
+                           & (df_lmp['hour'] < df_lmp['Event Window 1 End Hour'])) |
+                          ((df_lmp['hour'] >= df_lmp['Event Window 2 Start Hour'])
+                           & (df_lmp['hour'] < df_lmp['Event Window 2 End Hour']))),
                          np.where((df_lmp[arg + '_Events_Wkly_' + strike + '_SPP_constrained'] >
                                    df_lmp['Weekly Events Max']) & (df_lmp[strike] >=
                                                                    df_lmp['Event Duration Min (min)']), np.nan,
@@ -318,7 +380,9 @@ def constrained_duration(*args):  # in minutes
                                             df_lmp['Daily Events Max']) &
                                            (df_lmp[strike] >= df_lmp['Event Duration Min (min)']), np.nan,
                                            np.where((df_lmp[strike] > df_lmp['Event Duration Max (min)']) |
-                                                    (df_lmp['hour'] > df_lmp['Event Window End Hour']),
+                                                    (((df_lmp['hour'] >= df_lmp['Event Window 1 End Hour']) &
+                                                      (df_lmp['hour'] < df_lmp['Event Window 2 Start Hour'])) |
+                                                     (df_lmp['hour'] >= df_lmp['Event Window 2 End Hour'])),
                                                     np.nan, df_lmp[strike]))),
                          np.where(constraints['Dispatch Outside Event Window'],
                                   np.where(df_lmp[arg + '_Duration_' + strike + '_SPP'] >=
@@ -335,8 +399,10 @@ def constrained_duration(*args):  # in minutes
                     [df_lmp['new_ORDC_' + arg + '_Events_' + strike + '_SPP_constrained'],
                      df_lmp['date']]).cumsum(), np.nan)
             df_lmp['new_ORDC_' + arg + '_Duration_' + strike + '_SPP_constrained'] = \
-                np.where((df_lmp['hour'] >= df_lmp['Event Window Start Hour']) &
-                         (df_lmp['hour'] < df_lmp['Event Window End Hour']),
+                np.where((((df_lmp['hour'] >= df_lmp['Event Window 1 Start Hour'])
+                           & (df_lmp['hour'] < df_lmp['Event Window 1 End Hour'])) |
+                          ((df_lmp['hour'] >= df_lmp['Event Window 2 Start Hour'])
+                           & (df_lmp['hour'] < df_lmp['Event Window 2 End Hour']))),
                          np.where((df_lmp['new_ORDC_' + arg + '_Events_Wkly_' + strike + '_SPP_constrained'] >
                                    df_lmp['Weekly Events Max']) & (df_lmp[strike] >=
                                                                    df_lmp['Event Duration Min (min)']), np.nan,
@@ -344,7 +410,9 @@ def constrained_duration(*args):  # in minutes
                                             df_lmp['Daily Events Max']) &
                                            (df_lmp[strike] >= df_lmp['Event Duration Min (min)']), np.nan,
                                            np.where((df_lmp[strike] > df_lmp['Event Duration Max (min)']) |
-                                                    (df_lmp['hour'] > df_lmp['Event Window End Hour']),
+                                                    (((df_lmp['hour'] >= df_lmp['Event Window 1 End Hour']) &
+                                                      (df_lmp['hour'] < df_lmp['Event Window 2 Start Hour'])) |
+                                                     (df_lmp['hour'] >= df_lmp['Event Window 2 End Hour'])),
                                                     np.nan, df_lmp[strike]))),
                          np.where(constraints['Dispatch Outside Event Window'],
                                   np.where(df_lmp['new_ORDC_' + arg + '_Duration_' + strike + '_SPP'] >=
@@ -523,7 +591,7 @@ def strike_pivot(*args):
 print('Program started at ' + str(datetime.now()))
 # set variables
 folder_path = '/Users/rwilson/Desktop/Test/'
-output_file = 'Hedge_Value_Chipotle_with_10min.xlsx'
+output_file = 'Hedge_Value_Chipotle.xlsx'
 excel_file = pd.ExcelWriter('/Users/rwilson/Desktop/' + output_file)
 file_name = folder_path + 'Test.xlsx'
 xls = pd.ExcelFile(file_name)
@@ -540,8 +608,9 @@ final_lmp_columns_delete = ['HB_NORTH', 'LZ_HOUSTON', 'LZ_NORTH', 'LZ_SOUTH', 'L
                             'new_ORDC_LZ_SOUTH', 'new_ORDC_LZ_WEST', 'new_ORDC_RTOFFPA',
                             'new_ORDC_RTORPA', 'SCED total time', 'SPP total time', 'Daily Events Max',
                             'Weekly Events Max', 'Event Duration Min (min)', 'Event Duration Max (min)',
-                            'Event Window Start Hour', 'Event Window End Hour', 'Monday', 'Tuesday',
-                            'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                            'Event Window 1 Start Hour', 'Event Window 1 End Hour', 'Event Window 2 Start Hour',
+                            'Event Window 2 End Hour', 'Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                            'Friday', 'Saturday', 'Sunday']
 voll = 5000
 mcl = 3000
 
@@ -550,19 +619,19 @@ strikes_spp = {'1': [100, 150, 200], '2': [100, 150, 200], '3': [55, 80, 110],
                '4': [55, 80, 110], '5': [55, 80, 110], '6': [100, 150, 200],
                '7': [100, 150, 200], '8': [100, 150, 200], '9': [100, 150, 200],
                '10': [55, 80, 110], '11': [55, 80, 110], '12': [100, 150, 200]}
-strikes_lmp = {'1': [300, 450, 600], '2': [300, 450, 600], '3': [170, 250, 350],
-               '4': [170, 250, 350], '5': [170, 250, 350], '6': [300, 450, 600],
-               '7': [300, 450, 600], '8': [300, 450, 600], '9': [300, 450, 600],
-               '10': [170, 250, 350], '11': [170, 250, 350], '12': [300, 450, 600]}
+strikes_lmp = {'1': [200, 400, 550], '2': [200, 400, 550], '3': [140, 200, 300],
+               '4': [140, 200, 300], '5': [140, 200, 300], '6': [200, 400, 550],
+               '7': [200, 400, 550], '8': [200, 400, 550], '9': [200, 400, 550],
+               '10': [140, 200, 300], '11': [140, 200, 300], '12': [200, 400, 550]}
 strike_range = ['low', 'mid', 'high']
 df_strikes = pd.concat([pd.DataFrame(strikes_spp, index=['low_spp', 'mid_spp', 'high_spp']),
                         pd.DataFrame(strikes_lmp, index=['low_lmp', 'mid_lmp', 'high_lmp'])])
 
 # constraints
-constraints = {'Initial Dispatch Capture Pct': 0.2, 'Dispatch Outside Event Window': True}
-event_window = {'1': [22, 5], '2': [22, 5], '3': [22, 5], '4': [22, 5], '5': [22, 5],
-                '6': [22, 5], '7': [22, 5], '8': [22, 5], '9': [22, 5], '10': [22, 5],
-                '11': [22, 5], '12': [22, 5]}
+constraints = {'Initial Dispatch Capture Pct': 0.2, 'Dispatch Outside Event Window': False}
+event_window = {'1': [0, 5, 22, 24], '2': [0, 5, 22, 24], '3': [0, 5, 22, 24], '4': [0, 5, 22, 24],
+                '5': [0, 5, 22, 24], '6': [0, 5, 22, 24], '7': [0, 5, 22, 24], '8': [0, 5, 22, 24],
+                '9': [0, 5, 22, 24], '10': [0, 5, 22, 24], '11': [0, 5, 22, 24], '12': [0, 5, 22, 24]}
 event_duration = {'1': [10, 100, 11, 360], '2': [10, 100, 11, 360], '3': [10, 100, 11, 360],
                   '4': [10, 100, 11, 360],  '5': [10, 100, 11, 360], '6': [10, 100, 11, 360],
                   '7': [10, 100, 11, 360], '8': [10, 100, 11, 360], '9': [10, 100, 11, 360],
@@ -576,8 +645,10 @@ df_constraints = pd.concat([pd.DataFrame(event_duration, index=['Daily Events Ma
                                                                 'Weekly Events Max',
                                                                 'Event Duration Min (min)',
                                                                 'Event Duration Max (min)']),
-                            pd.DataFrame(event_window, index=['Event Window Start Hour',
-                                                              'Event Window End Hour']),
+                            pd.DataFrame(event_window, index=['Event Window 1 Start Hour',
+                                                              'Event Window 1 End Hour',
+                                                              'Event Window 2 Start Hour',
+                                                              'Event Window 2 End Hour']),
                             pd.DataFrame(event_day, index=['Monday', 'Tuesday', 'Wednesday', 'Thursday',
                                                            'Friday', 'Saturday', 'Sunday'])])
 '''
